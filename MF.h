@@ -1,18 +1,46 @@
 #pragma once
-#include <iostream>
 #include <Windows.h>
-#include <TlHelp32.h>
-#include <Psapi.h>
 #include <vector>
+#include <iostream>
+#include <Psapi.h>
 
-#define SUCCESS true
-#define FAILURE false
 
-#define ADDRESS uintptr_t
-
-class MFi
+class MF
 {
 public:
+    MODULEINFO GetModuleInfo(const char* szModule)
+    {
+        MODULEINFO modinfo = { 0 };
+        HMODULE hModule = GetModuleHandle(szModule);
+        if (hModule == 0)
+            return modinfo;
+        GetModuleInformation(GetCurrentProcess(), hModule, &modinfo, sizeof(MODULEINFO));
+        return modinfo;
+    }
+
+    uintptr_t FindPattern(const char* module, const char* pattern, const char* mask)
+    {
+        MODULEINFO mInfo = GetModuleInfo(module);
+        uintptr_t base = (uintptr_t)mInfo.lpBaseOfDll;
+        uintptr_t size = (uintptr_t)mInfo.SizeOfImage;
+        uintptr_t patternLength = (uintptr_t)strlen(mask);
+
+        for (uintptr_t i = 0; i < size - patternLength; i++)
+        {
+            bool found = true;
+            for (uintptr_t j = 0; j < patternLength; j++)
+            {
+                found &= mask[j] == '?' || pattern[j] == *(char*)(base + i + j);
+            }
+            if (found)
+            {
+                return uintptr_t(base + i);
+            }
+        }
+
+        return NULL;
+    }
+
     template <typename T>
     static T Read(uintptr_t address)
     {
@@ -119,113 +147,5 @@ public:
             addr += offsets[i];
         }
         return addr;
-    }
-};
-
-class MFe
-{
-private:
-    HANDLE ProcessHandle;
-    DWORD ProcessID;
-
-public:
-    uintptr_t GetModule(const wchar_t* ModuleName)
-    {
-        uintptr_t modBaseAddr = 0;
-        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetProcessId(ProcessHandle));
-        if (hSnap != INVALID_HANDLE_VALUE) {
-            MODULEENTRY32 modEntry;
-            modEntry.dwSize = sizeof(modEntry);
-
-            if (Module32First(hSnap, &modEntry)) {
-                do {
-                    if (!_wcsicmp(modEntry.szModule, ModuleName)) {
-                        modBaseAddr = (uintptr_t)modEntry.modBaseAddr;
-                        break;
-                    }
-                } while (Module32Next(hSnap, &modEntry));
-            }
-        }
-        CloseHandle(hSnap);
-        return modBaseAddr;
-    }
-
-    HANDLE GetHandle(const wchar_t* ProcessName)
-    {
-        HANDLE hSnap = (CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
-        if (!hSnap)
-            return nullptr;
-
-        PROCESSENTRY32 procEntry;
-        procEntry.dwSize = sizeof(procEntry);
-
-        if (Process32First(hSnap, &procEntry))
-        {
-            do {
-                if (!_wcsicmp(procEntry.szExeFile, ProcessName)) {
-                    ProcessID = procEntry.th32ProcessID;
-                    break;
-                }
-            } while (Process32Next(hSnap, &procEntry));
-        }
-
-        ProcessHandle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, ProcessID);
-
-        return ProcessHandle;
-    }
-
-    template <typename T> T Read(uintptr_t Address)
-    {
-        T BytesRead;
-        ReadProcessMemory(ProcessHandle, (LPVOID)Address, &BytesRead, sizeof(T), 0);
-        return BytesRead;
-    }
-
-    template <typename T> T Write(uintptr_t Address, T Value)
-    {
-        WriteProcessMemory(ProcessHandle, (LPVOID)Address, &Value, sizeof(T), 0);
-    }
-
-    uintptr_t GetPointerAddress(uintptr_t Base, std::vector <unsigned int> Offsets)
-    {
-        uintptr_t Address = Base;
-        for (unsigned int i = 0; i < Offsets.size(); i++)
-        {
-            ReadProcessMemory(ProcessHandle, (LPCVOID)Address, &Address, sizeof(uintptr_t), NULL);
-            Address += Offsets[i];
-        }
-        return Address;
-    }
-
-    uintptr_t GetPointerAddress(uintptr_t ModuleAddress, uintptr_t Address, std::vector<unsigned int> offsets)
-    {
-
-        uintptr_t offset_null = NULL;
-        ReadProcessMemory(ProcessHandle, (LPVOID*)(ModuleAddress + Address), &offset_null, sizeof(offset_null), 0);
-        uintptr_t pointeraddress = offset_null;
-        for (int i = 0; i < offsets.size() - 1; i++)
-        {
-            ReadProcessMemory(ProcessHandle, (LPVOID*)(pointeraddress + offsets.at(i)), &pointeraddress, sizeof(pointeraddress), 0);
-        }
-        return pointeraddress += offsets.at(offsets.size() - 1);
-    }
-
-    void Inject(LPCSTR DllPath)
-    {
-        LPVOID LoadLibAddy, RemoteString;
-
-        LoadLibAddy = (LPVOID)GetProcAddress(GetModuleHandle(L"kernel32.dll"), "LoadLibraryA");
-        RemoteString = (LPVOID)VirtualAllocEx(ProcessHandle, NULL, strlen(DllPath) + 1, MEM_COMMIT, PAGE_READWRITE);
-
-        WriteProcessMemory(ProcessHandle, RemoteString, (LPVOID)DllPath, strlen(DllPath) + 1, NULL);
-        CreateRemoteThread(ProcessHandle, NULL, NULL, (LPTHREAD_START_ROUTINE)LoadLibAddy, RemoteString, NULL, NULL);
-    }
-
-    bool Close()
-    {
-        bool _close = CloseHandle(ProcessHandle);
-        if (_close == SUCCESS)
-            return SUCCESS;
-        return FAILURE;
     }
 };
